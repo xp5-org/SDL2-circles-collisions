@@ -4,18 +4,29 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
-#include <deque>
+#include <vector>
+#include <iostream>
 
-const int SCREEN_WIDTH = 800;
+const int SCREEN_WIDTH = 600;
 const int SCREEN_HEIGHT = 600;
-const int CIRCLE_MIN_RADIUS = 8;
-const int CIRCLE_MAX_RADIUS = 64;
-
-const float CIRCLE_SPEED = 0.5;
-const int MAX_CIRCLES = 20;  // Maximum number of circles
+const int CIRCLE_MIN_RADIUS = 2;
+const int CIRCLE_MAX_RADIUS = 32;
+const float CIRCLE_SPEED = 1.2;
+int MAX_CIRCLES = 400;  // Maximum number of circles
 const int FRAMES_PER_SECOND = 30;
+const int SPAWN_RATE = 150; // milliseconds to wait between spawning
+const float MAX_ACCELERATION = 2.2f;  // Maximum acceleration allowed during collision response
+const float MAX_PUSH_DISTANCE = 0.5f;  // Maximum distance a circle can be pushed during collision response
+static int AUTOMODE = 1; //enable or disable render lag detector
+static int physicsTimer = 40; // number of milliseconds to wait between processing collision physics
+const Uint32 DELAY_THRESHOLD = 1000;  // Wait 2 seconds before reducing MAX_CIRCLES
+const Uint32 NO_DELAY_THRESHOLD = 5000;  // Wait 5 seconds before increasing MAX_CIRCLES
+
+
+
+
+int originalMaxCircles = MAX_CIRCLES;  // Store the original value of MAX_CIRCLES
 const int FRAME_DELAY = 1000 / FRAMES_PER_SECOND;
-const int SPAWN_RATE = 600; // milliseconds to wait between spawning
 
 struct Circle {
     float x;
@@ -27,17 +38,27 @@ struct Circle {
 };
 
 SDL_Window* window = nullptr;
-SDL_Renderer* renderer = nullptr;
-std::deque<Circle> circles;
+SDL_GLContext glContext;
+std::vector<Circle> circles;
 SDL_Rect leftWall;
 SDL_Rect rightWall;
+GLuint vbo;
 
 void initSDL() {
     SDL_Init(SDL_INIT_VIDEO);
-    window = SDL_CreateWindow("Circle Collision", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
+    window = SDL_CreateWindow("QCMs Circle Collision Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+    glContext = SDL_GL_CreateContext(window);
+
+    glClearColor(0, 0, 0, 1);
+    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    PFNGLGENBUFFERSPROC glGenBuffers;
+    glGenBuffers = (PFNGLGENBUFFERSPROC)SDL_GL_GetProcAddress("glGenBuffers");
+    glGenBuffers(1, &vbo);
 }
 
 Circle createRandomCircle() {
@@ -62,129 +83,167 @@ Circle createRandomCircle() {
 void createCircle() {
     static Uint32 lastCircleCreationTime = 0;
     Uint32 currentTime = SDL_GetTicks();
-    
-    if (currentTime - lastCircleCreationTime >= SPAWN_RATE) {
+
+    if (AUTOMODE == 0) {
         if (circles.size() >= MAX_CIRCLES) {
-            circles.pop_front();  // Remove the oldest circle
+            return;
         }
-        
+    }
+    else {
+        if (circles.size() >= MAX_CIRCLES) {
+            while (circles.size() > MAX_CIRCLES) {
+                circles.erase(circles.begin());  // Remove the oldest circle
+            }
+        }
+    }
+
+    if (currentTime - lastCircleCreationTime >= SPAWN_RATE) {
         Circle circle = createRandomCircle();
         circles.push_back(circle);
-        
+
         lastCircleCreationTime = currentTime;  // Update the last creation time
     }
 }
 
-
-void createWalls() {
-    //leftWall.x = 0;
-    //leftWall.y = SCREEN_HEIGHT - WALL_HEIGHT;
-    //leftWall.w = (SCREEN_WIDTH - WALL_GAP) / 2;
-    //leftWall.h = WALL_HEIGHT;
-
-    //rightWall.x = leftWall.x + leftWall.w + WALL_GAP;
-    //rightWall.y = SCREEN_HEIGHT - WALL_HEIGHT;
-    //rightWall.w = (SCREEN_WIDTH - WALL_GAP) / 2;
-    //rightWall.h = WALL_HEIGHT;
-}
 
 bool circlesCollide(const Circle& circle1, const Circle& circle2) {
     float dx = circle1.x - circle2.x;
     float dy = circle1.y - circle2.y;
     float distance = std::sqrt(dx * dx + dy * dy);
     float minDistance = circle1.radius + circle2.radius;
-
     return distance <= minDistance;
 }
+
 
 void handleCircleCollision(Circle& circle1, Circle& circle2) {
     float dx = circle2.x - circle1.x;
     float dy = circle2.y - circle1.y;
     float distance = std::sqrt(dx * dx + dy * dy);
-    float overlap = 0.5f * (distance - circle1.radius - circle2.radius);
 
-    circle1.x += overlap * (dx / distance);
-    circle1.y += overlap * (dy / distance);
+    // Calculate the minimum translation distance to separate the circles
+    float minTranslationDist = distance - circle1.radius - circle2.radius;
 
-    circle2.x -= overlap * (dx / distance);
-    circle2.y -= overlap * (dy / distance);
+    // Calculate the normal vector between the centers of the circles
+    float nx = dx / distance;
+    float ny = dy / distance;
+
+    // Calculate the relative velocity of the circles
+    float relativeVelocityX = circle2.dx - circle1.dx;
+    float relativeVelocityY = circle2.dy - circle1.dy;
+
+    // Calculate the impulse magnitude
+    float impulseMag = (2.0f * (relativeVelocityX * nx + relativeVelocityY * ny)) /
+                       (circle1.radius + circle2.radius);
+
+    // Apply the impulse to the circles based on their masses (sizes)
+    float massRatio = circle2.radius / circle1.radius;
+    float pushDistance = std::min(minTranslationDist * massRatio, MAX_PUSH_DISTANCE);
+    circle1.dx += std::min(impulseMag * nx * massRatio, MAX_ACCELERATION);
+    circle1.dy += std::min(impulseMag * ny * massRatio, MAX_ACCELERATION);
+    circle2.dx -= std::min(impulseMag * nx / massRatio, MAX_ACCELERATION);
+    circle2.dy -= std::min(impulseMag * ny / massRatio, MAX_ACCELERATION);
+
+    // Separate the circles to prevent overlap
+    circle1.x += pushDistance * (dx / distance);
+    circle1.y += pushDistance * (dy / distance);
+    circle2.x -= pushDistance * (dx / distance);
+    circle2.y -= pushDistance * (dy / distance);
 }
 
 void updateCircles() {
-    for (size_t i = 0; i < circles.size(); ++i) {
-        Circle& circle = circles[i];
-        circle.x += circle.dx;
-        circle.y += circle.dy;
+    static Uint32 lastPhysicsUpdateTime = 0;
+    Uint32 currentTime = SDL_GetTicks();
 
-        if (circle.y + circle.radius >= SCREEN_HEIGHT) {
-            if (circle.x >= leftWall.x + leftWall.w || circle.x + circle.radius <= rightWall.x) {
-                circle.y = SCREEN_HEIGHT - circle.radius;
-                circle.dx = 0;
-                circle.dy = 0;
+    if (currentTime - lastPhysicsUpdateTime >= physicsTimer) {
+        for (size_t i = 0; i < circles.size(); ++i) {
+            Circle& circle = circles[i];
+            circle.x += circle.dx;
+            circle.y += circle.dy;
+
+            if (circle.y + circle.radius >= SCREEN_HEIGHT) {
+                if (circle.x >= leftWall.x + leftWall.w || circle.x + circle.radius <= rightWall.x) {
+                    circle.y = SCREEN_HEIGHT - circle.radius;
+                    circle.dx = 0;
+                    circle.dy = 0;
+                }
+            }
+
+            for (size_t j = i + 1; j < circles.size(); ++j) {
+                Circle& otherCircle = circles[j];
+                if (circlesCollide(circle, otherCircle)) {
+                    handleCircleCollision(circle, otherCircle);
+                }
             }
         }
 
-        for (size_t j = i + 1; j < circles.size(); ++j) {
-            Circle& otherCircle = circles[j];
-            if (circlesCollide(circle, otherCircle)) {
-                handleCircleCollision(circle, otherCircle);
-            }
-        }
+        lastPhysicsUpdateTime = currentTime;
     }
 }
-
-void drawCircle(SDL_Renderer* renderer, int centerX, int centerY, int radius) {
-    int x = radius;
-    int y = 0;
-    int radiusError = 1 - x;
-
-    while (x >= y) {
-        for (int i = -1; i <= 1; i += 2) {
-            SDL_RenderDrawPoint(renderer, centerX + x * i, centerY + y);
-            SDL_RenderDrawPoint(renderer, centerX + y * i, centerY + x);
-            SDL_RenderDrawPoint(renderer, centerX + x * i, centerY - y);
-            SDL_RenderDrawPoint(renderer, centerX + y * i, centerY - x);
-        }
-        y++;
-
-        if (radiusError < 0) {
-            radiusError += 2 * y + 1;
-        } else {
-            x--;
-            radiusError += 2 * (y - x) + 1;
-        }
-    }
-}
-
 
 
 void drawCircles() {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glLineWidth(1.0f);  // Set the line width to 1 pixel
 
     for (const auto& circle : circles) {
-        SDL_SetRenderDrawColor(renderer, circle.color.r, circle.color.g, circle.color.b, 255);
-        drawCircle(renderer, static_cast<int>(circle.x), static_cast<int>(circle.y), static_cast<int>(circle.radius));
+        glBegin(GL_LINE_LOOP);  // Use GL_LINE_LOOP instead of GL_TRIANGLE_FAN
+        glColor3ub(circle.color.r, circle.color.g, circle.color.b);
+        for (float angle = 0.0f; angle < 2 * M_PI; angle += 0.01f) {
+            float x = circle.x + circle.radius * std::cos(angle);
+            float y = circle.y + circle.radius * std::sin(angle);
+            glVertex2f(x, y);
+        }
+        glEnd();
     }
-
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    SDL_RenderFillRect(renderer, &leftWall);
-    SDL_RenderFillRect(renderer, &rightWall);
-
-    SDL_RenderPresent(renderer);
+    SDL_GL_SwapWindow(window);
 }
 
-void cleanUp() {
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+
+void handleAutoMode(Uint32 frameDuration, Uint32& delayStartTime, Uint32& noDelayStartTime, Uint32& lastConsoleOutputTime, const Uint32 DELAY_THRESHOLD, const Uint32 NO_DELAY_THRESHOLD, const int originalMaxCircles) {
+    if (frameDuration > FRAME_DELAY) {
+        if (SDL_GetTicks() - lastConsoleOutputTime >= 2000) {
+            if (delayStartTime == 0) {
+                delayStartTime = SDL_GetTicks();
+            } else if (SDL_GetTicks() - delayStartTime >= DELAY_THRESHOLD) {
+                if (MAX_CIRCLES > 10) {
+                    MAX_CIRCLES -= 20;
+                } else {
+                    MAX_CIRCLES = 10;
+                }
+                std::cout << "Frame rendering falling behind. Lowering MAX_CIRCLES to: " << MAX_CIRCLES << std::endl;
+                delayStartTime = 0;  // Reset the delay start time
+            }
+            noDelayStartTime = 0;  // Reset the no delay start time
+            lastConsoleOutputTime = SDL_GetTicks();
+        }
+    } else {
+        delayStartTime = 0;  // Reset the delay start time
+
+        if (noDelayStartTime == 0) {
+            noDelayStartTime = SDL_GetTicks();
+        } else if (SDL_GetTicks() - noDelayStartTime >= NO_DELAY_THRESHOLD && MAX_CIRCLES < originalMaxCircles) {
+            MAX_CIRCLES += 10;
+            if (MAX_CIRCLES > originalMaxCircles) {
+                MAX_CIRCLES = originalMaxCircles;
+            }
+            std::cout << "Frame rendering delay improved. Increasing MAX_CIRCLES to: " << MAX_CIRCLES << std::endl;
+            noDelayStartTime = 0;  // Reset the no delay start time
+        }
+        lastConsoleOutputTime = 0;  // Reset the last console output time
+    }
 }
+
 
 int main(int argc, char* args[]) {
     initSDL();
-    createWalls();
 
     Uint32 frameStartTime, frameEndTime;
+    Uint32 lastConsoleOutputTime = 0;
+
+    Uint32 delayStartTime = 0;
+    Uint32 noDelayStartTime = 0;
+
 
     bool quit = false;
     while (!quit) {
@@ -206,8 +265,12 @@ int main(int argc, char* args[]) {
         if (frameDuration < FRAME_DELAY) {
             std::this_thread::sleep_for(std::chrono::milliseconds(FRAME_DELAY - frameDuration));
         }
+
+        if (AUTOMODE == 1) {
+            handleAutoMode(frameDuration, delayStartTime, noDelayStartTime, lastConsoleOutputTime, DELAY_THRESHOLD, NO_DELAY_THRESHOLD, originalMaxCircles);
+        }
     }
 
-    cleanUp();
+    //cleanUp();
     return 0;
 }
