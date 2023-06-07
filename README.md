@@ -9,8 +9,8 @@ to build this, im using the following with nix to launch a shell with the requir
 ``` bash
 nix-shell -p SDL SDL2 SDL2_ttf libGL libGLU freeglut glew --run '
     echo "Running G++ compile command"
-    bash -c "g++ bubbles.cpp -o bubbles -lSDL2 -lSDL2_ttf -lGL -lGLU -lglut -ldl -lGLEW" > >(tee -a output.log) 2>&1
+    bash -c "g++ circles.cpp -o bubbles -lSDL2 -lSDL2_ttf -lGL -lGLU -lglut -ldl -lGLEW" > >(tee -a output.log) 2>&1
     echo "Starting compiled program"
-    bash -c "./bubbles"
+    bash -c "./circles"
     '
  ```
