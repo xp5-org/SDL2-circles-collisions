@@ -5,7 +5,12 @@
 
 
 to build this, im using the following with nix to launch a shell with the required packages 
+Macos:
+% brew install quartz
+% g++ -v circles.cpp -I/opt/homebrew/include -L/opt/homebrew/lib -lSDL2 -lSDL2main -framework OpenGL -lpthread -o circles
 
+
+Nix:
 ``` bash
 nix-shell -p SDL SDL2 SDL2_ttf libGL libGLU freeglut glew --run '
     echo "Running G++ compile command"
