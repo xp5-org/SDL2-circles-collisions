@@ -6,9 +6,10 @@
 
 to build this, im using the following with nix to launch a shell with the required packages 
 Macos:
+```
 % brew install quartz
 % g++ -v circles.cpp -I/opt/homebrew/include -L/opt/homebrew/lib -lSDL2 -lSDL2main -framework OpenGL -lpthread -o circles
-
+```
 
 Nix:
 ``` bash
